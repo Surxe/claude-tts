@@ -27,7 +27,7 @@ dev session                       shared spool (2775)             ethan session
 
 | Path | Runs as | Role |
 |------|---------|------|
-| `bin/tts` | dev | CLI: `say`, `stop`, `on`, `off`, `status`, `hook` |
+| `bin/tts` | dev | CLI: `say`, `stop`, `on`, `off`, `volume`, `status`, `hook` |
 | `lib/narrate.py` | dev | transcript JSONL -> speakable prose (strips markdown, voices tool calls) |
 | `bin/tts-speak` | ethan | drains the spool, plays each WAV via `paplay` |
 | `systemd/claude-tts-play.{path,service}` | ethan | play queued speech on file drop |
@@ -37,12 +37,19 @@ dev session                       shared spool (2775)             ethan session
 ## Usage (type in the Claude Code prompt with a leading `!`)
 
 ```
-!tts say       # speak my latest response now, once  (primary mode)
-!tts stop      # cut off playback immediately
-!tts on        # auto-speak every reply in THIS session (needs the Stop hook)
-!tts off       # stop auto-speaking this session
-!tts status    # show this session's state + queue depth
+!tts say         # speak my latest response now, once  (primary mode)
+!tts stop        # cut off playback immediately
+!tts on          # auto-speak every reply in THIS session (needs the Stop hook)
+!tts off         # stop auto-speaking this session
+!tts volume 80   # set playback volume to 80% (0-150); no arg prints current
+!tts status      # show this session's state + queue depth + volume
 ```
+
+Volume is a single global level, not per-session: it lives in the shared spool
+(`control/volume`) so it crosses the dev->ethan boundary the same way `stop`
+does. dev's `tts volume N` writes the percent; the ethan-side player reads it and
+passes `paplay --volume` at play time (non-destructive -- the WAV is untouched,
+and values above 100% soft-amplify). Absent = 100%.
 
 Per-session and **default off**: nothing speaks unless you run `!tts say` or
 `!tts on`. State is keyed to `$CLAUDE_CODE_SESSION_ID`, so sessions are independent.
