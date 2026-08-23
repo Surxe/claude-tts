@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch the claude-tts spool for queued speech
+Documentation=https://github.com/Surxe/claude-tts
+
+[Path]
+# Fires claude-tts-play.service whenever dev drops a WAV in the spool. tts-speak
+# always removes each WAV it plays, so this re-arms cleanly and never loops.
+DirectoryNotEmpty=/srv/dev/tts/queue/incoming
+Unit=claude-tts-play.service
+
+[Install]
+WantedBy=default.target

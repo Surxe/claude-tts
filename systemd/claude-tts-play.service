@@ -1,0 +1,12 @@
+[Unit]
+Description=claude-tts - play queued speech in Ethan's audio session
+Documentation=https://github.com/Surxe/claude-tts
+After=default.target
+
+[Service]
+Type=oneshot
+# Deployed, review-gated copy on Ethan's PATH - never the dev-writable repo tree.
+# Runs as ethan so paplay can reach the PipeWire socket dev is walled off from.
+# Triggered by claude-tts-play.path, so no [Install]/WantedBy here.
+ExecStart=%h/.local/bin/tts-speak
+TimeoutStartSec=600

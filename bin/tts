@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# tts -- dev-side CLI for spoken Claude output.
+#
+# Runs as `dev`. dev cannot reach Ethan's audio server (multi-user isolation), so
+# this side only ever: reads the session transcript, filters it to speakable prose
+# (lib/narrate.py), synthesizes a WAV with piper, and drops the WAV in a shared
+# spool. An ethan-side systemd path unit plays it. See the claude-tts README.
+#
+# Subcommands:
+#   tts say      synthesize my latest response now and queue it for playback
+#   tts stop     stop playback immediately and clear the queue
+#   tts on|off   enable/disable always-on for THIS session (default off)
+#   tts status   show this session's always-on state + queue depth
+#   tts hook     internal: called by the Stop hook; no-op unless this session is on
+#
+# Zero tokens: pure local read -> filter -> piper -> file drop.
+set -uo pipefail
+
+# ---- config (override in ~/.config/claude-tts/config, shell syntax) ----
+PIPER_BIN="${TTS_PIPER_BIN:-$HOME/.local/opt/piper/piper}"
+VOICE="${TTS_VOICE:-$HOME/.local/share/piper/voices/en_US-lessac-medium.onnx}"
+SPOOL="${TTS_SPOOL:-/srv/dev/tts/queue}"
+NARRATE="${TTS_NARRATE:-$HOME/.local/share/claude-tts/narrate.py}"
+FLAG_DIR="${TTS_FLAG_DIR:-$HOME/.claude/tts}"
+LENGTH_SCALE="${TTS_LENGTH_SCALE:-1.0}"   # piper rate: higher = slower
+PROJECT_DIR="${TTS_PROJECT_DIR:-$HOME/.claude/projects/-srv-dev}"
+_CFG="$HOME/.config/claude-tts/config"
+[ -r "$_CFG" ] && . "$_CFG"
+
+SID="${CLAUDE_CODE_SESSION_ID:-unknown}"
+INCOMING="$SPOOL/incoming"
+BUILDING="$SPOOL/building"
+CONTROL="$SPOOL/control"
+
+die(){ printf 'tts: %s\n' "$*" >&2; exit 1; }
+
+# Synthesize a transcript's latest response into the spool.
+#   $1 = transcript path   $2 = 1 for verbose (on-demand), 0 for quiet (hook)
+_synth() {
+    local transcript="$1" verbose="$2" text ts base tmp out
+    [ -f "$transcript" ] || { [ "$verbose" = 1 ] && die "no transcript at $transcript"; return 0; }
+    [ -x "$PIPER_BIN" ] || die "piper not found at $PIPER_BIN (run setup/install-piper.sh)"
+    text="$(python3 "$NARRATE" "$transcript" 2>/dev/null)" || die "narrate failed"
+    if [ -z "${text//[[:space:]]/}" ]; then
+        [ "$verbose" = 1 ] && echo "tts: latest response has no speakable text"
+        return 0
+    fi
+    mkdir -p "$INCOMING" "$BUILDING"
+    ts="$(date +%s%N)"; base="${ts}-${SID}"
+    tmp="$BUILDING/$base.wav"          # synthesize outside incoming/ ...
+    out="$INCOMING/$base.wav"
+    if ! printf '%s\n' "$text" | "$PIPER_BIN" --model "$VOICE" \
+            --length_scale "$LENGTH_SCALE" --output_file "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"; die "piper synthesis failed"
+    fi
+    mv -f "$tmp" "$out"                # ... then atomically reveal; play.path fires
+    [ "$verbose" = 1 ] && echo "tts: queued $(basename "$out") ($(wc -c <"$out") bytes)"
+    return 0
+}
+
+cmd_say() {
+    _synth "$PROJECT_DIR/$SID.jsonl" 1
+}
+
+cmd_stop() {
+    mkdir -p "$CONTROL" "$INCOMING"
+    rm -f "$INCOMING"/*.wav 2>/dev/null || true
+    : > "$CONTROL/STOP"               # fires stop.path -> ethan kills paplay
+    echo "tts: stop requested"
+}
+
+cmd_on() {
+    mkdir -p "$FLAG_DIR"
+    : > "$FLAG_DIR/$SID.on"
+    echo "tts: always-on ENABLED for this session ($SID)"
+}
+
+cmd_off() {
+    rm -f "$FLAG_DIR/$SID.on"
+    echo "tts: always-on disabled for this session ($SID)"
+}
+
+cmd_status() {
+    local state n
+    [ -e "$FLAG_DIR/$SID.on" ] && state=ON || state=off
+    n="$(find "$INCOMING" -maxdepth 1 -name '*.wav' 2>/dev/null | wc -l)"
+    echo "tts: session=$SID always-on=$state queued=$n"
+}
+
+cmd_hook() {
+    # Called by the Stop hook with the hook JSON on stdin. Resolve session +
+    # transcript from that JSON (fall back to env), and speak only if this
+    # session opted in. Silent + cheap when off: a single flag-file check.
+    local json sid tr
+    json="$(cat 2>/dev/null || true)"
+    sid="$(printf '%s' "$json" | jq -r '.session_id // empty' 2>/dev/null)"
+    tr="$(printf '%s' "$json" | jq -r '.transcript_path // empty' 2>/dev/null)"
+    [ -n "$sid" ] || sid="$SID"
+    [ -n "$tr" ] || tr="$PROJECT_DIR/$sid.jsonl"
+    [ -e "$FLAG_DIR/$sid.on" ] || exit 0
+    SID="$sid"                        # so the queued filename carries the session
+    _synth "$tr" 0
+}
+
+usage() {
+    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+case "${1:-}" in
+    say)    cmd_say ;;
+    stop)   cmd_stop ;;
+    on)     cmd_on ;;
+    off)    cmd_off ;;
+    status) cmd_status ;;
+    hook)   cmd_hook ;;
+    ""|-h|--help|help) usage 0 ;;
+    *) die "unknown subcommand '$1' (try: say stop on off status)" ;;
+esac

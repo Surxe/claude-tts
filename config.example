@@ -1,0 +1,8 @@
+# claude-tts config -- copy to ~/.config/claude-tts/config and edit.
+# Sourced by `tts` as shell, so use shell assignment syntax.
+
+# Voice model (see ~/.local/share/piper/voices for what is installed):
+# TTS_VOICE="$HOME/.local/share/piper/voices/en_US-lessac-medium.onnx"
+
+# Speaking rate -- piper length_scale; higher is slower, lower is faster (1.0 = default):
+# TTS_LENGTH_SCALE=1.0

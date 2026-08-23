@@ -1,0 +1,12 @@
+[Unit]
+Description=Watch for a claude-tts stop request
+Documentation=https://github.com/Surxe/claude-tts
+
+[Path]
+# `tts stop` (dev) touches this file; the stop service then kills Ethan's paplay.
+# dev cannot signal an ethan-owned process, so the interrupt has to cross here.
+PathExists=/srv/dev/tts/queue/control/STOP
+Unit=claude-tts-stop.service
+
+[Install]
+WantedBy=default.target
