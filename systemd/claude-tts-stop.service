@@ -1,0 +1,12 @@
+[Unit]
+Description=claude-tts - stop playback now and clear the queue
+Documentation=https://github.com/Surxe/claude-tts
+
+[Service]
+Type=oneshot
+# Kill any in-flight playback (dev can't signal an ethan process), then remove the
+# STOP flag so the path unit re-arms, and clear anything still queued. Each step is
+# `-` prefixed so a no-op (nothing playing) is not a unit failure.
+ExecStart=-/usr/bin/pkill -u %u -x paplay
+ExecStartPost=-/usr/bin/find /srv/dev/tts/queue/control -name STOP -delete
+ExecStartPost=-/bin/sh -c 'rm -f /srv/dev/tts/queue/incoming/*.wav'

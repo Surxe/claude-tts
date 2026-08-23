@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# tts-speak -- ethan-side player for the claude-tts spool.
+#
+# Runs AS ethan, triggered by claude-tts-play.path (systemd --user) whenever dev
+# drops a WAV in the queue. Plays each queued WAV through Ethan's audio session
+# (paplay), oldest first, then removes it. Only ethan-context processes can reach
+# the PipeWire socket, which is the whole reason this side exists.
+#
+# This is the deployed, review-gated COPY on Ethan's PATH -- never run from the
+# dev-writable repo tree.
+set -uo pipefail
+
+SPOOL="${TTS_SPOOL:-/srv/dev/tts/queue}"
+INCOMING="$SPOOL/incoming"
+FAILED="$SPOOL/failed"
+CONTROL="$SPOOL/control"
+mkdir -p "$FAILED"
+
+shopt -s nullglob
+# Timestamp-prefixed names sort chronologically via the glob's own ordering.
+files=("$INCOMING"/*.wav)
+[ "${#files[@]}" -gt 0 ] || exit 0
+
+for f in "${files[@]}"; do
+    [ -f "$f" ] || continue
+    # A stop request may have landed mid-drain -> abort and let dev's queue-clear win.
+    if [ -e "$CONTROL/STOP" ]; then
+        break
+    fi
+    if paplay "$f" 2>/dev/null; then
+        rm -f "$f"
+    else
+        mv -f "$f" "$FAILED/" 2>/dev/null || rm -f "$f"
+    fi
+done
+exit 0
