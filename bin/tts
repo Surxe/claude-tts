@@ -7,11 +7,12 @@
 # spool. An ethan-side systemd path unit plays it. See the claude-tts README.
 #
 # Subcommands:
-#   tts say      synthesize my latest response now and queue it for playback
-#   tts stop     stop playback immediately and clear the queue
-#   tts on|off   enable/disable always-on for THIS session (default off)
-#   tts status   show this session's always-on state + queue depth
-#   tts hook     internal: called by the Stop hook; no-op unless this session is on
+#   tts say         synthesize my latest response now and queue it for playback
+#   tts stop        stop playback immediately and clear the queue
+#   tts on|off      enable/disable always-on for THIS session (default off)
+#   tts volume [N]  show, or set (0-150), playback volume percent (shared/global)
+#   tts status      show this session's always-on state + queue depth + volume
+#   tts hook        internal: called by the Stop hook; no-op unless this session is on
 #
 # Zero tokens: pure local read -> filter -> piper -> file drop.
 set -uo pipefail
@@ -80,11 +81,37 @@ cmd_off() {
     echo "tts: always-on disabled for this session ($SID)"
 }
 
+# Playback volume is a single global percent kept in the shared spool
+# (control/volume), so it crosses the dev->ethan boundary the same way STOP does:
+# dev writes it, the ethan-side player reads it and passes paplay --volume.
+# Absent = 100%.
+_read_volume() {
+    local v=100
+    if [ -r "$CONTROL/volume" ]; then
+        v="$(cat "$CONTROL/volume" 2>/dev/null)"
+        case "$v" in ''|*[!0-9]*) v=100 ;; esac
+    fi
+    printf '%s' "$v"
+}
+
+cmd_volume() {
+    mkdir -p "$CONTROL"
+    if [ "$#" -eq 0 ]; then
+        echo "tts: volume=$(_read_volume)%"
+        return 0
+    fi
+    local pct="$1"
+    case "$pct" in ''|*[!0-9]*) die "volume must be an integer percent 0-150 (got '$pct')" ;; esac
+    [ "$pct" -le 150 ] || die "volume capped at 150% (got '$pct')"
+    printf '%s\n' "$pct" > "$CONTROL/volume"
+    echo "tts: volume set to ${pct}%"
+}
+
 cmd_status() {
     local state n
     [ -e "$FLAG_DIR/$SID.on" ] && state=ON || state=off
     n="$(find "$INCOMING" -maxdepth 1 -name '*.wav' 2>/dev/null | wc -l)"
-    echo "tts: session=$SID always-on=$state queued=$n"
+    echo "tts: session=$SID always-on=$state queued=$n volume=$(_read_volume)%"
 }
 
 cmd_hook() {
@@ -103,7 +130,7 @@ cmd_hook() {
 }
 
 usage() {
-    sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
@@ -112,8 +139,9 @@ case "${1:-}" in
     stop)   cmd_stop ;;
     on)     cmd_on ;;
     off)    cmd_off ;;
+    volume) shift; cmd_volume "$@" ;;
     status) cmd_status ;;
     hook)   cmd_hook ;;
     ""|-h|--help|help) usage 0 ;;
-    *) die "unknown subcommand '$1' (try: say stop on off status)" ;;
+    *) die "unknown subcommand '$1' (try: say stop on off volume status)" ;;
 esac
