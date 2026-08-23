@@ -121,6 +121,67 @@ def _table_row(m):
     return ", ".join(c for c in cells if c) + "."
 
 
+_VOWEL = re.compile(r"[aeiouyAEIOUY]")
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+                   r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+# a hex blob that mixes letters and digits (commit SHA, short hash) reads as noise
+_HASH = re.compile(r"(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}")
+# a bare token that piper can pronounce: starts with a letter, has a vowel,
+# short enough to not be a blob (dots/dashes/underscores allowed for filenames)
+_READABLE = re.compile(r"[A-Za-z][\w.\-]{0,31}")
+
+
+def _humanize(tok):
+    """narrate.py -> 'narrate py', foo_bar-baz -> 'foo bar baz'."""
+    return re.sub(r"[._\-/]+", " ", tok).strip() or tok
+
+
+def _is_readable(tok):
+    return bool(_READABLE.fullmatch(tok)) and bool(_VOWEL.search(tok))
+
+
+def speak_code(content):
+    """Turn the innards of an inline-code span into a spoken cue.
+
+    Short, pronounceable tokens (a filename, a config key, `on`/`off`) are read
+    as-is; anything a listener could not follow by ear -- commands, paths,
+    flags, hashes -- collapses to a short category word instead.
+    """
+    s = content.strip()
+    if not s:
+        return ""
+    if re.search(r"\s", s):                       # more than one token -> a command
+        head = s.split()[0].split("/")[-1]        # basename of the first token
+        head = head.split(".")[0]                 # drop any extension (.sh/.py)
+        verb = _humanize(head)
+        if re.fullmatch(r"[A-Za-z][\w \-]{0,23}", verb):
+            return "a {} command".format(verb)
+        return "a command"
+    if s.startswith("-") and not s[1:2].isdigit():
+        return "a flag"
+    if s.startswith("$"):
+        return "a variable"
+    if s.startswith(("http://", "https://", "www.")):
+        return "a link"
+    if _EMAIL.fullmatch(s):
+        return "an email address"
+    if _UUID.fullmatch(s):
+        return "an identifier"
+    if "/" in s:                                  # a path -> basename if speakable
+        base = s.rstrip("/").split("/")[-1]
+        if len(base) >= 3 and _is_readable(base):
+            return _humanize(base)
+        return "a file path"
+    if _HASH.fullmatch(s.lower()):
+        return "a hash"
+    if re.fullmatch(r"[A-Za-z0-9+/=_]{20,}", s):  # base64-ish blob
+        return "an identifier"
+    if _is_readable(s):
+        return _humanize(s)
+    return "some code"
+
+
 def clean(text):
     """Reduce markdown to speakable prose."""
     # fenced code blocks -> a single spoken cue
@@ -129,8 +190,8 @@ def clean(text):
     # images then links -> their visible text
     text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
-    # inline code
-    text = re.sub(r"`([^`]*)`", r"\1", text)
+    # inline code -> a spoken cue (commands/paths/hashes become category words)
+    text = re.sub(r"`([^`]*)`", lambda m: " " + speak_code(m.group(1)) + " ", text)
     # headings and blockquote markers
     text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
     text = re.sub(r"(?m)^\s{0,3}>\s?", "", text)
@@ -144,8 +205,23 @@ def clean(text):
     text = re.sub(r"(?m)^\s*\d+\.\s+", "", text)
     # emphasis markers (after lists, so leading * bullets are already gone)
     text = re.sub(r"(\*\*|\*|__|~~)", "", text)
-    # bare URLs
+    # noise that survives outside code spans: URLs, emails, ids, paths, vars.
+    # URLs first so their slashes aren't mistaken for a file path.
     text = re.sub(r"https?://\S+", "a link", text)
+    text = _EMAIL.sub("an email address", text)
+    text = _UUID.sub("an identifier", text)
+    text = re.sub(r"\$[A-Za-z_][A-Za-z0-9_]{2,}", "a variable", text)
+    # a source location like narrate.py:127 -> "narrate py line 127"
+    text = re.sub(
+        r"\b([\w\-]+\.[A-Za-z]{1,5}):(\d+)\b",
+        lambda m: _humanize(m.group(1)) + " line " + m.group(2),
+        text,
+    )
+    # a bare filesystem path: two or more slash-separated segments
+    text = re.sub(r"(?<![\w/])~?(?:/[\w.\-]+){2,}/?", " a file path ", text)
+    # a bare hash / commit sha sitting in prose (word-bounded, letters+digits)
+    text = re.sub(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}\b",
+                  "a hash", text)
     # drop emoji / dingbats / arrows that piper would mispronounce
     text = re.sub(
         r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
