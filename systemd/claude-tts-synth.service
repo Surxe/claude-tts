@@ -1,0 +1,14 @@
+[Unit]
+Description=claude-tts - synthesize queued text (e.g. the clipboard) into speech
+Documentation=https://github.com/Surxe/claude-tts
+After=default.target
+
+[Service]
+Type=oneshot
+# Runs as DEV: narrate --raw + piper (the CPU cost stays on the dev side), then
+# drops a WAV in incoming/ where Ethan's claude-tts-play.path picks it up. This is
+# dev's OWN deployed CLI in dev's home -- no privilege boundary is crossed (dev
+# running dev's code), so referencing it via %h is fine. Triggered by
+# claude-tts-synth.path, so no [Install]/WantedBy here.
+ExecStart=%h/.local/bin/tts speak-drain
+TimeoutStartSec=600

@@ -23,16 +23,38 @@ dev session                       shared spool (2775)             ethan session
   resident daemon. One plays queued WAVs; one handles an instant stop (dev cannot
   signal an ethan-owned `paplay`, so the interrupt crosses via a `STOP` file).
 
+### Speaking text from outside a Claude session
+
+`tts speak FILE` narrates any text/markdown file, not just a transcript. To speak
+something produced in Ethan's session -- the clipboard, say -- the text has to
+reach dev for synthesis, because piper lives in `~dev` (mode `0700`) and Ethan
+cannot run it. So the bridge is symmetric: a producer drops a `.txt` in
+`text-incoming/`, and a **dev-side** path unit drains it:
+
+```
+producer (ethan)          shared spool               dev session
+  wl-paste ─ write .txt ─▶ text-incoming/ ─┐
+                                           ▼  claude-tts-synth.path (systemd --user)
+                                     tts speak-drain: narrate --raw + piper
+                                           └─▶ incoming/ ─▶ (ethan plays, as above)
+```
+
+Same "nothing running while idle" property: the dev-side watcher is a path unit,
+idle until a file lands. dev has lingering enabled, so it stays armed across
+logouts. A bad file is parked in `text-failed/`, never retried in a loop.
+
 ## Layout
 
 | Path | Runs as | Role |
 |------|---------|------|
-| `bin/tts` | dev | CLI: `say`, `stop`, `on`, `off`, `volume`, `status`, `hook` |
-| `lib/narrate.py` | dev | transcript JSONL -> speakable prose (strips markdown, voices tool calls) |
+| `bin/tts` | dev | CLI: `say`, `speak FILE`, `stop`, `on`, `off`, `volume`, `status`, `hook`, `speak-drain` |
+| `lib/narrate.py` | dev | transcript (or `--raw` file) -> speakable prose (strips markdown, voices tool calls) |
 | `bin/tts-speak` | ethan | drains the spool, plays each WAV via `paplay` |
 | `systemd/claude-tts-play.{path,service}` | ethan | play queued speech on file drop |
 | `systemd/claude-tts-stop.{path,service}` | ethan | kill playback + clear queue on `STOP` |
+| `systemd/claude-tts-synth.{path,service}` | dev | synth queued text (`speak-drain`) on drop in `text-incoming/` |
 | `setup/install-piper.sh` | dev | fetch piper binary + voice into `~dev` (idempotent; blobs not in git) |
+| `setup/install-synth-units.sh` | dev | deploy + enable the dev-side synth path unit |
 
 ## Usage (type in the Claude Code prompt with a leading `!`)
 

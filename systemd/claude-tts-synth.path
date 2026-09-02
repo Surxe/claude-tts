@@ -1,0 +1,14 @@
+[Unit]
+Description=Watch the claude-tts spool for queued text to synthesize
+Documentation=https://github.com/Surxe/claude-tts
+
+[Path]
+# Fires claude-tts-synth.service whenever a producer (e.g. the clipboard keybind)
+# drops a .txt in the text spool. Runs in DEV's user systemd, so synthesis (piper)
+# stays on the dev side. speak-drain removes each file it handles, so this re-arms
+# cleanly and never loops.
+DirectoryNotEmpty=/srv/dev/tts/queue/text-incoming
+Unit=claude-tts-synth.service
+
+[Install]
+WantedBy=default.target

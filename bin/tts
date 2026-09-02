@@ -14,6 +14,7 @@
 #   tts volume [N]  show, or set (0-150), playback volume percent (shared/global)
 #   tts status      show this session's always-on state + queue depth + volume
 #   tts hook        internal: called by the Stop hook; no-op unless this session is on
+#   tts speak-drain internal: synth every queued text file (dev-side path unit)
 #
 # Zero tokens: pure local read -> filter -> piper -> file drop.
 set -uo pipefail
@@ -33,6 +34,10 @@ SID="${CLAUDE_CODE_SESSION_ID:-unknown}"
 INCOMING="$SPOOL/incoming"
 BUILDING="$SPOOL/building"
 CONTROL="$SPOOL/control"
+# Text queued for synthesis from OUTSIDE a Claude session (e.g. the clipboard):
+# a producer drops a .txt here, the dev-side synth path unit runs `speak-drain`.
+TEXT_INCOMING="$SPOOL/text-incoming"
+TEXT_FAILED="$SPOOL/text-failed"
 
 die(){ printf 'tts: %s\n' "$*" >&2; exit 1; }
 
@@ -82,6 +87,32 @@ cmd_speak() {
     [ -r "$file" ] || die "cannot read file: $file"
     text="$(python3 "$NARRATE" --raw "$file" 2>/dev/null)" || die "narrate failed"
     _queue_text "$text" 1
+}
+
+# Drain the text spool: synthesize every queued .txt, oldest first, then remove
+# it. Triggered by the dev-side claude-tts-synth.path unit whenever a producer
+# (the clipboard keybind, say) drops text that originates outside a Claude
+# session. Per-file resilient: a bad file is parked in text-failed/, never
+# retried in a loop, and never aborts the rest of the drain.
+cmd_speak_drain() {
+    mkdir -p "$TEXT_INCOMING" "$TEXT_FAILED"
+    shopt -s nullglob
+    local files=("$TEXT_INCOMING"/*.txt) f text
+    [ "${#files[@]}" -gt 0 ] || exit 0     # nothing queued; path unit re-arms
+    for f in "${files[@]}"; do
+        [ -f "$f" ] || continue
+        text="$(python3 "$NARRATE" --raw "$f" 2>/dev/null)"
+        if [ -z "${text//[[:space:]]/}" ]; then
+            rm -f "$f"; continue           # empty / no speakable text -> just drop
+        fi
+        # Run the synth in a subshell so a single failure (_queue_text calls die)
+        # parks that file and moves on instead of killing the whole drain.
+        if ( _queue_text "$text" 0 ); then
+            rm -f "$f"
+        else
+            mv -f "$f" "$TEXT_FAILED/" 2>/dev/null || rm -f "$f"
+        fi
+    done
 }
 
 cmd_stop() {
@@ -151,19 +182,20 @@ cmd_hook() {
 }
 
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     exit "${1:-0}"
 }
 
 case "${1:-}" in
-    say)    cmd_say ;;
-    speak)  shift; cmd_speak "$@" ;;
-    stop)   cmd_stop ;;
-    on)     cmd_on ;;
-    off)    cmd_off ;;
-    volume) shift; cmd_volume "$@" ;;
-    status) cmd_status ;;
-    hook)   cmd_hook ;;
+    say)         cmd_say ;;
+    speak)       shift; cmd_speak "$@" ;;
+    speak-drain) cmd_speak_drain ;;
+    stop)        cmd_stop ;;
+    on)          cmd_on ;;
+    off)         cmd_off ;;
+    volume)      shift; cmd_volume "$@" ;;
+    status)      cmd_status ;;
+    hook)        cmd_hook ;;
     ""|-h|--help|help) usage 0 ;;
     *) die "unknown subcommand '$1' (try: say speak stop on off volume status)" ;;
 esac
