@@ -8,6 +8,7 @@
 #
 # Subcommands:
 #   tts say         synthesize my latest response now and queue it for playback
+#   tts speak FILE  synthesize the text of an arbitrary file and queue it
 #   tts stop        stop playback immediately and clear the queue
 #   tts on|off      enable/disable always-on for THIS session (default off)
 #   tts volume [N]  show, or set (0-150), playback volume percent (shared/global)
@@ -35,17 +36,17 @@ CONTROL="$SPOOL/control"
 
 die(){ printf 'tts: %s\n' "$*" >&2; exit 1; }
 
-# Synthesize a transcript's latest response into the spool.
-#   $1 = transcript path   $2 = 1 for verbose (on-demand), 0 for quiet (hook)
-_synth() {
-    local transcript="$1" verbose="$2" text ts base tmp out
-    [ -f "$transcript" ] || { [ "$verbose" = 1 ] && die "no transcript at $transcript"; return 0; }
-    [ -x "$PIPER_BIN" ] || die "piper not found at $PIPER_BIN (run setup/install-piper.sh)"
-    text="$(python3 "$NARRATE" "$transcript" 2>/dev/null)" || die "narrate failed"
+# Synthesize a block of prose into a WAV and drop it in the spool for playback.
+# This is the shared back half of the pipeline: every source (a transcript, an
+# arbitrary file) resolves to text, then hands it here.
+#   $1 = text   $2 = 1 for verbose (on-demand), 0 for quiet (hook)
+_queue_text() {
+    local text="$1" verbose="$2" ts base tmp out
     if [ -z "${text//[[:space:]]/}" ]; then
-        [ "$verbose" = 1 ] && echo "tts: latest response has no speakable text"
+        [ "$verbose" = 1 ] && echo "tts: nothing speakable to say"
         return 0
     fi
+    [ -x "$PIPER_BIN" ] || die "piper not found at $PIPER_BIN (run setup/install-piper.sh)"
     mkdir -p "$INCOMING" "$BUILDING"
     ts="$(date +%s%N)"; base="${ts}-${SID}"
     tmp="$BUILDING/$base.wav"          # synthesize outside incoming/ ...
@@ -59,8 +60,28 @@ _synth() {
     return 0
 }
 
+# Synthesize a transcript's latest response into the spool.
+#   $1 = transcript path   $2 = 1 for verbose (on-demand), 0 for quiet (hook)
+_synth() {
+    local transcript="$1" verbose="$2" text
+    [ -f "$transcript" ] || { [ "$verbose" = 1 ] && die "no transcript at $transcript"; return 0; }
+    text="$(python3 "$NARRATE" "$transcript" 2>/dev/null)" || die "narrate failed"
+    _queue_text "$text" "$verbose"
+}
+
 cmd_say() {
     _synth "$PROJECT_DIR/$SID.jsonl" 1
+}
+
+# Speak an arbitrary file: read it, strip markdown to prose (narrate --raw),
+# and queue. The generic entry point -- any text file, not just a transcript.
+cmd_speak() {
+    local file="${1:-}" text
+    [ -n "$file" ] || die "usage: tts speak FILE"
+    [ -f "$file" ] || die "no such file: $file"
+    [ -r "$file" ] || die "cannot read file: $file"
+    text="$(python3 "$NARRATE" --raw "$file" 2>/dev/null)" || die "narrate failed"
+    _queue_text "$text" 1
 }
 
 cmd_stop() {
@@ -136,6 +157,7 @@ usage() {
 
 case "${1:-}" in
     say)    cmd_say ;;
+    speak)  shift; cmd_speak "$@" ;;
     stop)   cmd_stop ;;
     on)     cmd_on ;;
     off)    cmd_off ;;
@@ -143,5 +165,5 @@ case "${1:-}" in
     status) cmd_status ;;
     hook)   cmd_hook ;;
     ""|-h|--help|help) usage 0 ;;
-    *) die "unknown subcommand '$1' (try: say stop on off volume status)" ;;
+    *) die "unknown subcommand '$1' (try: say speak stop on off volume status)" ;;
 esac
