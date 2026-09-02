@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""narrate.py -- turn a Claude Code transcript into speakable narration.
+"""narrate.py -- turn text into speakable narration.
 
-Reads a session .jsonl transcript (path as argv[1]), extracts the assistant's
-latest response (everything after the last human prompt), replaces tool calls
-with a short spoken marker so the listener knows a command ran, strips markdown
-down to clean prose, and prints the result to stdout for piper to synthesize.
+Two modes, both printing clean prose to stdout for piper to synthesize:
+
+  narrate.py <transcript.jsonl>   (default) extract the assistant's latest
+      response from a Claude Code session transcript -- everything after the
+      last human prompt -- voicing tool calls as short cues, then strip markdown.
+
+  narrate.py --raw <file>         treat <file> as generic text/markdown and just
+      strip it down to speakable prose (no transcript parsing). Backs `tts speak`.
 
 Zero network, zero tokens -- pure local text processing.
 """
@@ -236,14 +240,33 @@ def clean(text):
     return text.strip()
 
 
-def main():
-    if len(sys.argv) < 2:
-        return 0
+def narrate_transcript(path):
+    """A session transcript -> the latest assistant response as spoken prose."""
     try:
-        recs = load_records(sys.argv[1])
+        recs = load_records(path)
     except (FileNotFoundError, PermissionError):
+        return ""
+    return clean(extract_response(recs))
+
+
+def narrate_raw(path):
+    """A generic text/markdown file -> spoken prose (no transcript parsing)."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            raw = fh.read()
+    except (FileNotFoundError, PermissionError, IsADirectoryError):
+        return ""
+    return clean(raw)
+
+
+def main():
+    args = sys.argv[1:]
+    raw = False
+    if args and args[0] == "--raw":
+        raw, args = True, args[1:]
+    if not args:
         return 0
-    text = clean(extract_response(recs))
+    text = narrate_raw(args[0]) if raw else narrate_transcript(args[0])
     if text.strip():
         sys.stdout.write(text + "\n")
     return 0
