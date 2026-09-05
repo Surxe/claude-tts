@@ -1,21 +1,10 @@
 # claude-tts config -- copy to ~/.config/claude-tts/config and edit.
 # Sourced by `tts` as shell, so use shell assignment syntax.
 
-# --- engine ---
-# "kokoro" (higher quality, flows across sentences), "piper" (the original fast
-# binary), or "auto" (kokoro if installed, else piper). Default: auto.
-# TTS_ENGINE="auto"
-
-# --- kokoro (preferred; run setup/install-kokoro.sh once) ---
+# --- kokoro synth engine (run setup/install-kokoro.sh once) ---
 # Voice (see the Kokoro voice list, e.g. af_heart, af_bella, am_michael, bf_emma):
 # KOKORO_VOICE="af_heart"
 # Speaking rate -- higher is faster (1.0 = default):
 # KOKORO_SPEED=1.0
 # Silence in seconds inserted between packed chunks (lower = tighter flow):
 # KOKORO_GAP=0.12
-
-# --- piper (fallback) ---
-# Voice model (see ~/.local/share/piper/voices for what is installed):
-# TTS_VOICE="$HOME/.local/share/piper/voices/en_US-lessac-medium.onnx"
-# Speaking rate -- piper length_scale; higher is slower, lower is faster (1.0 = default):
-# TTS_LENGTH_SCALE=1.0

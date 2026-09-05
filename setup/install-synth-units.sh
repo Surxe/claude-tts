@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # install-synth-units.sh -- deploy + enable the dev-side text->speech watcher.
 #
-# The clipboard/text bridge needs a watcher on the DEV side (piper lives in
-# ~dev, which is 0700, so ethan cannot synthesize -- the text has to cross the
-# shared spool to dev). This installs the two systemd USER units that do it:
+# The clipboard/text bridge needs a watcher on the DEV side (the synth engine
+# lives in ~dev, which is 0700, so ethan cannot synthesize -- the text has to
+# cross the shared spool to dev). This installs the two systemd USER units that do it:
 #
 #   claude-tts-synth.path     watches /srv/dev/tts/queue/text-incoming
 #   claude-tts-synth.service  runs `tts speak-drain` on each drop

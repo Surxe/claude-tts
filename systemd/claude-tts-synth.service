@@ -5,7 +5,7 @@ After=default.target
 
 [Service]
 Type=oneshot
-# Runs as DEV: narrate --raw + piper (the CPU cost stays on the dev side), then
+# Runs as DEV: narrate --raw + kokoro (the CPU cost stays on the dev side), then
 # drops a WAV in incoming/ where Ethan's claude-tts-play.path picks it up. This is
 # dev's OWN deployed CLI in dev's home -- no privilege boundary is crossed (dev
 # running dev's code), so referencing it via %h is fine. Triggered by

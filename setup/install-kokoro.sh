@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # install-kokoro.sh -- set up the Kokoro (ONNX, CPU) synth engine in dev's home.
 #
-# Kokoro-82M is the higher-quality successor to the piper path: it carries
-# prosody across a whole utterance, so multi-sentence replies flow instead of
-# sounding clipped. It runs on CPU via onnxruntime -- no GPU, no tokens, no
+# Kokoro-82M is the synth engine: it carries prosody across a whole utterance,
+# so multi-sentence replies flow instead of sounding clipped. It runs on CPU via
+# onnxruntime -- no GPU, no tokens, no
 # network at synth time. This creates a self-contained venv and downloads the
 # model, so nothing here needs root (dev has no sudo). espeak-ng comes bundled
 # via the espeakng-loader wheel, so there is no system package to install.
@@ -11,7 +11,7 @@
 # Deliberately NOT committed to git: the venv, the model (~311 MB) and the
 # voices (~27 MB). This script reproduces them and is idempotent (skips what
 # already exists). Run as dev; invoked by my-system's claude-tts installer, or
-# standalone. `tts` auto-detects the result and falls back to piper if absent.
+# standalone. `tts` refuses to synthesize until this has run.
 set -euo pipefail
 
 VENV="${KOKORO_VENV:-$HOME/.local/opt/kokoro-venv}"
