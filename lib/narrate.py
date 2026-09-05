@@ -82,6 +82,26 @@ def is_human_prompt(rec):
     return False
 
 
+def _flush_markers(markers):
+    """A run of tool cues -> one flowing sentence, not a burst of clipped ones.
+
+    ['read a file'] -> 'I read a file.'
+    ['read a file', 'edited a file', 'ran a shell command']
+        -> 'I read a file, edited a file, then ran a shell command.'
+    Speaking a batch of actions as a single sentence reads far more naturally
+    than the machine-gun 'Read a file. Edited a file. Wrote a file.'
+    """
+    if not markers:
+        return None
+    if len(markers) == 1:
+        body = markers[0]
+    elif len(markers) == 2:
+        body = "{}, then {}".format(markers[0], markers[1])
+    else:
+        body = "{}, then {}".format(", ".join(markers[:-1]), markers[-1])
+    return "I " + body + "."
+
+
 def extract_response(recs):
     """Concatenate assistant text after the last human prompt, with tool cues."""
     start = 0
@@ -89,15 +109,22 @@ def extract_response(recs):
         if is_human_prompt(r):
             start = i + 1
     parts = []
-    last_marker = None
+    pending = []          # a run of tool cues awaiting the next text block / end
+
+    def flush():
+        sentence = _flush_markers(pending)
+        if sentence:
+            parts.append(sentence)
+        pending.clear()
+
     for r in recs[start:]:
         if r.get("type") != "assistant":
             continue
         content = (r.get("message") or {}).get("content")
         if isinstance(content, str):
             if content.strip():
+                flush()
                 parts.append(content.strip())
-                last_marker = None
             continue
         if not isinstance(content, list):
             continue
@@ -108,14 +135,14 @@ def extract_response(recs):
             if t == "text":
                 txt = (b.get("text") or "").strip()
                 if txt:
+                    flush()
                     parts.append(txt)
-                    last_marker = None
             elif t == "tool_use":
                 m = marker_for(b.get("name"))
-                if m != last_marker:          # collapse runs of identical calls
-                    parts.append(m[0].upper() + m[1:] + ".")
-                    last_marker = m
+                if not pending or pending[-1] != m:   # collapse identical runs
+                    pending.append(m)
             # thinking / other block types are not part of the visible reply
+    flush()
     return "\n\n".join(parts)
 
 
@@ -188,9 +215,10 @@ def speak_code(content):
 
 def clean(text):
     """Reduce markdown to speakable prose."""
-    # fenced code blocks -> a single spoken cue
-    text = re.sub(r"```.*?```", " . code block . ", text, flags=re.DOTALL)
-    text = re.sub(r"~~~.*?~~~", " . code block . ", text, flags=re.DOTALL)
+    # fenced code blocks -> a single spoken cue, as an inline aside (commas, not
+    # standalone periods) so it flows inside the surrounding sentence
+    text = re.sub(r"```.*?```", ", a code block, ", text, flags=re.DOTALL)
+    text = re.sub(r"~~~.*?~~~", ", a code block, ", text, flags=re.DOTALL)
     # images then links -> their visible text
     text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
     text = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", text)
@@ -233,10 +261,15 @@ def clean(text):
         "",
         text,
     )
-    # whitespace + stray-period cleanup
+    # whitespace + stray-punctuation cleanup
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"(?:\s*\.\s*){2,}", ". ", text)
+    text = re.sub(r"(?:\s*\.\s*){2,}", ". ", text)   # runs of periods -> one
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text)      # no space before punctuation
+    text = re.sub(r"(?:\s*,\s*){2,}", ", ", text)     # doubled commas -> one
+    text = re.sub(r"([.!?;:])\s*,", r"\1", text)      # comma right after a stop
+    text = re.sub(r"(?m)^\s*,\s*", "", text)          # a line that starts on a comma
+    text = re.sub(r",\s*(?=\n|$)", "", text)          # a dangling trailing comma
     return text.strip()
 
 

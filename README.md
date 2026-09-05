@@ -12,13 +12,13 @@ dev session                       shared spool (2775)             ethan session
  tts say / Stop hook            /srv/dev/tts/queue/               systemd --user
    read transcript                ├─ incoming/  <- dev drops .wav  path units (idle
    narrate.py -> prose            ├─ building/  (synth scratch)    until a file lands)
-   piper -> WAV  ───────────────▶ ├─ failed/                          │
+   kokoro/piper -> WAV  ────────▶ ├─ failed/                          │
  tts stop ─────write STOP───────▶ └─ control/STOP                     ▼
                                                                   tts-speak: paplay
                                                                   each WAV, oldest first
 ```
 
-- **dev** only ever synthesizes a WAV and drops it (piper's CPU cost stays here).
+- **dev** only ever synthesizes a WAV and drops it (all synth CPU cost stays here).
 - **ethan** side is minimal and privileged: two path-activated user units, no
   resident daemon. One plays queued WAVs; one handles an instant stop (dev cannot
   signal an ethan-owned `paplay`, so the interrupt crosses via a `STOP` file).
@@ -49,10 +49,12 @@ logouts. A bad file is parked in `text-failed/`, never retried in a loop.
 |------|---------|------|
 | `bin/tts` | dev | CLI: `say`, `speak FILE`, `stop`, `on`, `off`, `volume`, `status`, `hook`, `speak-drain` |
 | `lib/narrate.py` | dev | transcript (or `--raw` file) -> speakable prose (strips markdown, voices tool calls) |
+| `lib/kokoro_synth.py` | dev | prose -> WAV with Kokoro (packs sentences per call for flow) |
 | `bin/tts-speak` | ethan | drains the spool, plays each WAV via `paplay` |
 | `systemd/claude-tts-play.{path,service}` | ethan | play queued speech on file drop |
 | `systemd/claude-tts-stop.{path,service}` | ethan | kill playback + clear queue on `STOP` |
 | `systemd/claude-tts-synth.{path,service}` | dev | synth queued text (`speak-drain`) on drop in `text-incoming/` |
+| `setup/install-kokoro.sh` | dev | build the Kokoro venv + download the model into `~dev` (idempotent; blobs not in git) |
 | `setup/install-piper.sh` | dev | fetch piper binary + voice into `~dev` (idempotent; blobs not in git) |
 | `setup/install-synth-units.sh` | dev | deploy + enable the dev-side synth path unit |
 
@@ -86,11 +88,39 @@ loads piper.
 ## Install / deploy
 
 Deployed by `my-system` (`users/install.sh`, run as ethan): copies `tts` +
-`narrate.py` to dev's `~/.local`, runs `setup/install-piper.sh`, review-gated
-copies `tts-speak` + the units to Ethan's home, creates the spool, and enables
-the path units in Ethan's user systemd.
+`narrate.py` + `kokoro_synth.py` to dev's `~/.local`, runs
+`setup/install-kokoro.sh` (venv + model) and `setup/install-piper.sh`
+(fallback), review-gated copies `tts-speak` + the units to Ethan's home,
+creates the spool, and enables the path units in Ethan's user systemd.
+
+## Speech engine
+
+Two engines produce the WAV; the ethan-side player is identical either way, so
+this choice is entirely contained on the dev side.
+
+- **Kokoro** (default, `setup/install-kokoro.sh`) -- Kokoro-82M via ONNX on CPU.
+  It carries prosody across a whole utterance, so a multi-sentence reply is
+  spoken as connected speech instead of a string of separately-intoned
+  sentences. `lib/kokoro_synth.py` packs consecutive sentences into each
+  synthesis call (up to the model's token cap) and inserts only a short gap
+  *between* packed chunks -- that packing is what makes it read like a paragraph
+  rather than a list. Runs in a self-contained venv in `~dev` (no sudo;
+  espeak-ng is bundled via a wheel). ~3-4x faster than real-time on a Ryzen 5.
+- **Piper** (fallback, `setup/install-piper.sh`) -- the original single-binary
+  VITS engine. Used automatically when Kokoro is not installed, or when
+  `TTS_ENGINE=piper`.
+
+Selection is `TTS_ENGINE` (`kokoro` | `piper` | `auto`, default `auto`). `auto`
+uses Kokoro when its venv + model are present and silently falls back to piper
+otherwise, so a box without the Kokoro install still speaks. `tts status` prints
+the engine in effect.
+
+Also, regardless of engine, `narrate.py` now voices a run of tool calls as one
+flowing sentence ("I read a file, edited a file, then ran a shell command.")
+rather than a burst of two-word sentences, and folds inline cues like a code
+block into the surrounding sentence instead of breaking it.
 
 ## Voice
 
-Default `en_US-lessac-medium`. Change it in `~/.config/claude-tts/config`
-(see `config.example`).
+Kokoro default `af_heart`; piper default `en_US-lessac-medium`. Change the voice,
+rate, and inter-chunk gap in `~/.config/claude-tts/config` (see `config.example`).
