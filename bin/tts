@@ -3,8 +3,8 @@
 #
 # Runs as `dev`. dev cannot reach Ethan's audio server (multi-user isolation), so
 # this side only ever: reads the session transcript, filters it to speakable prose
-# (lib/narrate.py), synthesizes a WAV with piper, and drops the WAV in a shared
-# spool. An ethan-side systemd path unit plays it. See the claude-tts README.
+# (lib/narrate.py), synthesizes a WAV (kokoro, or piper as a fallback), and drops
+# the WAV in a shared spool. An ethan-side systemd path unit plays it. See README.
 #
 # Subcommands:
 #   tts say         synthesize my latest response now and queue it for playback
@@ -16,16 +16,34 @@
 #   tts hook        internal: called by the Stop hook; no-op unless this session is on
 #   tts speak-drain internal: synth every queued text file (dev-side path unit)
 #
-# Zero tokens: pure local read -> filter -> piper -> file drop.
+# Zero tokens: pure local read -> filter -> synth -> file drop.
 set -uo pipefail
 
 # ---- config (override in ~/.config/claude-tts/config, shell syntax) ----
+# Engine: "kokoro" (higher quality, flows across sentences), "piper" (the
+# original fast binary), or "auto" (kokoro if its venv+model are present, else
+# piper). Default auto -- so a box without the kokoro install still speaks.
+TTS_ENGINE="${TTS_ENGINE:-auto}"
+
+# --- piper (fallback engine) ---
 PIPER_BIN="${TTS_PIPER_BIN:-$HOME/.local/opt/piper/piper}"
 VOICE="${TTS_VOICE:-$HOME/.local/share/piper/voices/en_US-lessac-medium.onnx}"
+LENGTH_SCALE="${TTS_LENGTH_SCALE:-1.0}"   # piper rate: higher = slower
+
+# --- kokoro (preferred engine; see setup/install-kokoro.sh) ---
+KOKORO_VENV="${KOKORO_VENV:-$HOME/.local/opt/kokoro-venv}"
+KOKORO_PY="${KOKORO_PY:-$KOKORO_VENV/bin/python}"
+KOKORO_SYNTH="${KOKORO_SYNTH:-$HOME/.local/share/claude-tts/kokoro_synth.py}"
+KOKORO_MODEL="${KOKORO_MODEL:-$HOME/.local/share/kokoro/kokoro-v1.0.onnx}"
+KOKORO_VOICES="${KOKORO_VOICES:-$HOME/.local/share/kokoro/voices-v1.0.bin}"
+KOKORO_VOICE="${KOKORO_VOICE:-af_heart}"
+KOKORO_SPEED="${KOKORO_SPEED:-1.0}"       # kokoro rate: higher = faster
+KOKORO_LANG="${KOKORO_LANG:-en-us}"
+KOKORO_GAP="${KOKORO_GAP:-0.12}"          # seconds of silence between chunks
+
 SPOOL="${TTS_SPOOL:-/srv/dev/tts/queue}"
 NARRATE="${TTS_NARRATE:-$HOME/.local/share/claude-tts/narrate.py}"
 FLAG_DIR="${TTS_FLAG_DIR:-$HOME/.claude/tts}"
-LENGTH_SCALE="${TTS_LENGTH_SCALE:-1.0}"   # piper rate: higher = slower
 PROJECT_DIR="${TTS_PROJECT_DIR:-$HOME/.claude/projects/-srv-dev}"
 _CFG="$HOME/.config/claude-tts/config"
 [ -r "$_CFG" ] && . "$_CFG"
@@ -41,27 +59,76 @@ TEXT_FAILED="$SPOOL/text-failed"
 
 die(){ printf 'tts: %s\n' "$*" >&2; exit 1; }
 
+# True if the kokoro engine is fully installed (venv, synth script, model,
+# voices). `auto` uses this to decide; `kokoro` requires it.
+_kokoro_ready() {
+    [ -x "$KOKORO_PY" ] && [ -f "$KOKORO_SYNTH" ] \
+        && [ -f "$KOKORO_MODEL" ] && [ -f "$KOKORO_VOICES" ]
+}
+
+# Synthesize $1 (text) into WAV $2 with kokoro. Returns nonzero on any failure
+# so the caller can fall back to piper.
+_synth_kokoro() {
+    printf '%s\n' "$1" | "$KOKORO_PY" "$KOKORO_SYNTH" \
+        --model "$KOKORO_MODEL" --voices "$KOKORO_VOICES" --out "$2" \
+        --voice "$KOKORO_VOICE" --speed "$KOKORO_SPEED" \
+        --lang "$KOKORO_LANG" --gap "$KOKORO_GAP" >/dev/null 2>&1
+}
+
+# Synthesize $1 (text) into WAV $2 with piper.
+_synth_piper() {
+    [ -x "$PIPER_BIN" ] || return 1
+    printf '%s\n' "$1" | "$PIPER_BIN" --model "$VOICE" \
+        --length_scale "$LENGTH_SCALE" --output_file "$2" >/dev/null 2>&1
+}
+
+# Synthesize $1 (text) into WAV $2 using the configured engine, honoring
+# TTS_ENGINE and falling back to piper if kokoro is selected-but-unusable.
+# Echoes the engine actually used; returns nonzero if synthesis failed.
+_synth_wav() {
+    local text="$1" out="$2"
+    case "$TTS_ENGINE" in
+        piper)     # explicit: piper only, fail loudly if it can't synth
+            _synth_piper "$text" "$out" && { echo piper; return 0; }
+            return 1 ;;
+        kokoro)    # explicit: kokoro only, so a broken install is visible
+            _kokoro_ready || return 1
+            _synth_kokoro "$text" "$out" && { echo kokoro; return 0; }
+            return 1 ;;
+        auto)      # kokoro when usable, else silently fall back to piper
+            if _kokoro_ready && _synth_kokoro "$text" "$out"; then
+                echo kokoro; return 0
+            fi
+            _synth_piper "$text" "$out" && { echo piper; return 0; }
+            return 1 ;;
+        *)
+            die "unknown TTS_ENGINE '$TTS_ENGINE' (use kokoro, piper, or auto)" ;;
+    esac
+}
+
 # Synthesize a block of prose into a WAV and drop it in the spool for playback.
 # This is the shared back half of the pipeline: every source (a transcript, an
 # arbitrary file) resolves to text, then hands it here.
 #   $1 = text   $2 = 1 for verbose (on-demand), 0 for quiet (hook)
 _queue_text() {
-    local text="$1" verbose="$2" ts base tmp out
+    local text="$1" verbose="$2" ts base tmp out engine
     if [ -z "${text//[[:space:]]/}" ]; then
         [ "$verbose" = 1 ] && echo "tts: nothing speakable to say"
         return 0
     fi
-    [ -x "$PIPER_BIN" ] || die "piper not found at $PIPER_BIN (run setup/install-piper.sh)"
+    # At least one engine must be usable.
+    if ! _kokoro_ready && [ ! -x "$PIPER_BIN" ]; then
+        die "no TTS engine available (run setup/install-kokoro.sh or setup/install-piper.sh)"
+    fi
     mkdir -p "$INCOMING" "$BUILDING"
     ts="$(date +%s%N)"; base="${ts}-${SID}"
     tmp="$BUILDING/$base.wav"          # synthesize outside incoming/ ...
     out="$INCOMING/$base.wav"
-    if ! printf '%s\n' "$text" | "$PIPER_BIN" --model "$VOICE" \
-            --length_scale "$LENGTH_SCALE" --output_file "$tmp" >/dev/null 2>&1; then
-        rm -f "$tmp"; die "piper synthesis failed"
+    if ! engine="$(_synth_wav "$text" "$tmp")"; then
+        rm -f "$tmp"; die "synthesis failed (engine=$TTS_ENGINE)"
     fi
     mv -f "$tmp" "$out"                # ... then atomically reveal; play.path fires
-    [ "$verbose" = 1 ] && echo "tts: queued $(basename "$out") ($(wc -c <"$out") bytes)"
+    [ "$verbose" = 1 ] && echo "tts: queued $(basename "$out") via $engine ($(wc -c <"$out") bytes)"
     return 0
 }
 
@@ -160,10 +227,15 @@ cmd_volume() {
 }
 
 cmd_status() {
-    local state n
+    local state n engine
     [ -e "$FLAG_DIR/$SID.on" ] && state=ON || state=off
     n="$(find "$INCOMING" -maxdepth 1 -name '*.wav' 2>/dev/null | wc -l)"
-    echo "tts: session=$SID always-on=$state queued=$n volume=$(_read_volume)%"
+    case "$TTS_ENGINE" in
+        piper)       engine=piper ;;
+        kokoro|auto) _kokoro_ready && engine=kokoro || engine="piper(fallback)" ;;
+        *)           engine="$TTS_ENGINE?" ;;
+    esac
+    echo "tts: session=$SID always-on=$state engine=$engine queued=$n volume=$(_read_volume)%"
 }
 
 cmd_hook() {
