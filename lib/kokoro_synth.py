@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """kokoro_synth.py -- synthesize prose into a WAV with Kokoro (ONNX, CPU).
 
-The higher-quality successor to the piper path in `tts`. Reads speakable prose
-on stdin (already stripped by narrate.py) and writes a 24 kHz mono WAV.
+The synth engine behind `tts`. Reads speakable prose on stdin (already stripped
+by narrate.py) and writes a 24 kHz mono WAV.
 
 Why this exists / how it improves flow
 --------------------------------------
-Piper synthesizes one sentence at a time and glues them with a fixed silence,
-so a multi-sentence reply comes out as a string of independently-intoned
+A naive TTS setup synthesizes one sentence at a time and glues them with a fixed
+silence, so a multi-sentence reply comes out as a string of independently-intoned
 sentences -- the "words in a sentence" choppiness. Kokoro carries prosody
 across a whole synthesis call, so the win here is to feed it as much text per
 call as the model allows: we greedily PACK consecutive sentences into a chunk
@@ -23,7 +23,8 @@ Usage:
     narrate.py ... | kokoro_synth.py --model M.onnx --voices V.bin --out OUT.wav
                      [--voice af_heart] [--speed 1.0] [--lang en-us] [--gap 0.12]
 
-Exit non-zero on any failure so `tts` can fall back to piper.
+Exit non-zero on any failure so `tts` surfaces the error rather than queuing a
+bad WAV.
 """
 import argparse
 import re
@@ -160,7 +161,7 @@ def main():
     try:
         pcm, sr = synth(text, args.model, args.voices, args.voice,
                         args.speed, args.lang, args.gap)
-    except Exception as exc:  # any failure -> let tts fall back to piper
+    except Exception as exc:  # any failure -> tts surfaces the error, no WAV queued
         sys.stderr.write("kokoro_synth: {}\n".format(exc))
         return 1
 

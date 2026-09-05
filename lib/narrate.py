@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """narrate.py -- turn text into speakable narration.
 
-Two modes, both printing clean prose to stdout for piper to synthesize:
+Two modes, both printing clean prose to stdout for the synth engine to speak:
 
   narrate.py <transcript.jsonl>   (default) extract the assistant's latest
       response from a Claude Code session transcript -- everything after the
@@ -158,7 +158,7 @@ _UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 # a hex blob that mixes letters and digits (commit SHA, short hash) reads as noise
 _HASH = re.compile(r"(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}")
-# a bare token that piper can pronounce: starts with a letter, has a vowel,
+# a bare token the synth engine can pronounce: starts with a letter, has a vowel,
 # short enough to not be a blob (dots/dashes/underscores allowed for filenames)
 _READABLE = re.compile(r"[A-Za-z][\w.\-]{0,31}")
 
@@ -254,7 +254,7 @@ def clean(text):
     # a bare hash / commit sha sitting in prose (word-bounded, letters+digits)
     text = re.sub(r"\b(?=[0-9a-f]*[a-f])(?=[0-9a-f]*\d)[0-9a-f]{7,}\b",
                   "a hash", text)
-    # drop emoji / dingbats / arrows that piper would mispronounce
+    # drop emoji / dingbats / arrows that the synth engine would mispronounce
     text = re.sub(
         r"[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF"
         r"←-⇿⌀-⏿⬀-⯿️]",

@@ -12,7 +12,7 @@ dev session                       shared spool (2775)             ethan session
  tts say / Stop hook            /srv/dev/tts/queue/               systemd --user
    read transcript                ├─ incoming/  <- dev drops .wav  path units (idle
    narrate.py -> prose            ├─ building/  (synth scratch)    until a file lands)
-   kokoro/piper -> WAV  ────────▶ ├─ failed/                          │
+   kokoro -> WAV  ──────────────▶ ├─ failed/                          │
  tts stop ─────write STOP───────▶ └─ control/STOP                     ▼
                                                                   tts-speak: paplay
                                                                   each WAV, oldest first
@@ -27,15 +27,15 @@ dev session                       shared spool (2775)             ethan session
 
 `tts speak FILE` narrates any text/markdown file, not just a transcript. To speak
 something produced in Ethan's session -- the clipboard, say -- the text has to
-reach dev for synthesis, because piper lives in `~dev` (mode `0700`) and Ethan
-cannot run it. So the bridge is symmetric: a producer drops a `.txt` in
+reach dev for synthesis, because the synth engine lives in `~dev` (mode `0700`)
+and Ethan cannot run it. So the bridge is symmetric: a producer drops a `.txt` in
 `text-incoming/`, and a **dev-side** path unit drains it:
 
 ```
 producer (ethan)          shared spool               dev session
   wl-paste ─ write .txt ─▶ text-incoming/ ─┐
                                            ▼  claude-tts-synth.path (systemd --user)
-                                     tts speak-drain: narrate --raw + piper
+                                     tts speak-drain: narrate --raw + kokoro
                                            └─▶ incoming/ ─▶ (ethan plays, as above)
 ```
 
@@ -55,7 +55,6 @@ logouts. A bad file is parked in `text-failed/`, never retried in a loop.
 | `systemd/claude-tts-stop.{path,service}` | ethan | kill playback + clear queue on `STOP` |
 | `systemd/claude-tts-synth.{path,service}` | dev | synth queued text (`speak-drain`) on drop in `text-incoming/` |
 | `setup/install-kokoro.sh` | dev | build the Kokoro venv + download the model into `~dev` (idempotent; blobs not in git) |
-| `setup/install-piper.sh` | dev | fetch piper binary + voice into `~dev` (idempotent; blobs not in git) |
 | `setup/install-synth-units.sh` | dev | deploy + enable the dev-side synth path unit |
 
 ## Usage (type in the Claude Code prompt with a leading `!`)
@@ -83,44 +82,34 @@ Per-session and **default off**: nothing speaks unless you run `!tts say` or
 `tts on/off` set a per-session flag (`~dev/.claude/tts/<session>.on`). A `Stop`
 hook in dev's `settings.json` calls `tts hook`, which no-ops unless the current
 session's flag exists -- so when off it costs one file check per reply and never
-loads piper.
+loads the synth engine.
 
 ## Install / deploy
 
 Deployed by `my-system` (`users/install.sh`, run as ethan): copies `tts` +
 `narrate.py` + `kokoro_synth.py` to dev's `~/.local`, runs
-`setup/install-kokoro.sh` (venv + model) and `setup/install-piper.sh`
-(fallback), review-gated copies `tts-speak` + the units to Ethan's home,
-creates the spool, and enables the path units in Ethan's user systemd.
+`setup/install-kokoro.sh` (venv + model), review-gated copies `tts-speak` + the
+units to Ethan's home, creates the spool, and enables the path units in Ethan's
+user systemd.
 
 ## Speech engine
 
-Two engines produce the WAV; the ethan-side player is identical either way, so
-this choice is entirely contained on the dev side.
+Synthesis is **Kokoro-82M** via ONNX on CPU (`setup/install-kokoro.sh`). It
+carries prosody across a whole utterance, so a multi-sentence reply is spoken as
+connected speech instead of a string of separately-intoned sentences.
+`lib/kokoro_synth.py` packs consecutive sentences into each synthesis call (up to
+the model's token cap) and inserts only a short gap *between* packed chunks --
+that packing is what makes it read like a paragraph rather than a list. It runs
+in a self-contained venv in `~dev` (no sudo; espeak-ng is bundled via a wheel),
+~3-4x faster than real-time on a Ryzen 5. The engine choice is entirely contained
+on the dev side -- the ethan-side player just plays whatever WAV lands.
 
-- **Kokoro** (default, `setup/install-kokoro.sh`) -- Kokoro-82M via ONNX on CPU.
-  It carries prosody across a whole utterance, so a multi-sentence reply is
-  spoken as connected speech instead of a string of separately-intoned
-  sentences. `lib/kokoro_synth.py` packs consecutive sentences into each
-  synthesis call (up to the model's token cap) and inserts only a short gap
-  *between* packed chunks -- that packing is what makes it read like a paragraph
-  rather than a list. Runs in a self-contained venv in `~dev` (no sudo;
-  espeak-ng is bundled via a wheel). ~3-4x faster than real-time on a Ryzen 5.
-- **Piper** (fallback, `setup/install-piper.sh`) -- the original single-binary
-  VITS engine. Used automatically when Kokoro is not installed, or when
-  `TTS_ENGINE=piper`.
-
-Selection is `TTS_ENGINE` (`kokoro` | `piper` | `auto`, default `auto`). `auto`
-uses Kokoro when its venv + model are present and silently falls back to piper
-otherwise, so a box without the Kokoro install still speaks. `tts status` prints
-the engine in effect.
-
-Also, regardless of engine, `narrate.py` now voices a run of tool calls as one
-flowing sentence ("I read a file, edited a file, then ran a shell command.")
-rather than a burst of two-word sentences, and folds inline cues like a code
-block into the surrounding sentence instead of breaking it.
+`narrate.py` also voices a run of tool calls as one flowing sentence ("I read a
+file, edited a file, then ran a shell command.") rather than a burst of two-word
+sentences, and folds inline cues like a code block into the surrounding sentence
+instead of breaking it.
 
 ## Voice
 
-Kokoro default `af_heart`; piper default `en_US-lessac-medium`. Change the voice,
-rate, and inter-chunk gap in `~/.config/claude-tts/config` (see `config.example`).
+Default `af_heart`. Change the voice, rate, and inter-chunk gap in
+`~/.config/claude-tts/config` (see `config.example`).
