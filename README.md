@@ -83,6 +83,8 @@ Per-session and **default off**: nothing speaks unless you run `!tts say` or
 hook in dev's `settings.json` calls `tts hook`, which no-ops unless the current
 session's flag exists -- so when off it costs one file check per reply and never
 loads the synth engine.
+The hook is declared in `hooks.json` and applied by the deployer through dev-env's
+`lib/claude-settings.py apply-hooks` (merge-only, idempotent).
 
 ## Install / deploy
 

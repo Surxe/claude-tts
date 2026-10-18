@@ -1,0 +1,9 @@
+{
+  "hooks": [
+    {
+      "event": "Stop",
+      "why": "Auto-speak each reply when the session ran `tts on`; `tts hook` no-ops (one file check) otherwise. Applied to dev's settings.json by the deploying machine repo via dev-env's claude-settings.py apply-hooks.",
+      "command": "$HOME/.local/bin/tts hook"
+    }
+  ]
+}
